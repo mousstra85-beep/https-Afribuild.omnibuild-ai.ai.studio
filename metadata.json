@@ -1,0 +1,6 @@
+{
+  "name": "AfriBuilder AI Studio",
+  "description": "Plateforme no-code de création d'applications mobiles (APK/AAB) et sites web sans coder, propulsée par 3 IA coordonnées (Développement, Recherche, Sécurité & Contrôle), avec gestion Mobile Money et publication.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
