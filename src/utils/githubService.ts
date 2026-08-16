@@ -308,6 +308,10 @@ jobs:
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml          # Déploiement automatique GitHub Pages
+├── database/                   # Schémas SQL & Migrations
+│   ├── schema.sql              # Tables PostgreSQL/CloudSQL (Users, Items, Orders, Payments)
+│   ├── seed.sql                # Données initiales de démonstration
+│   └── sqlite_schema.sql       # Variante SQLite locale / mobile
 ├── android/                    # Fichiers sources pour compilation APK / AAB
 │   └── app/
 │       ├── build.gradle
@@ -315,6 +319,20 @@ jobs:
 ├── capacitor.config.json       # Configuration mobile Capacitor
 ├── DOCUMENTATION.md            # Cahier des charges & documentation technique
 └── README.md                   # Présentation du projet
+\`\`\`
+
+---
+
+## 🗄️ Base de Données SQL & Migrations
+
+Les fichiers SQL sont situés dans le dossier \`database/\` :
+- **\`database/schema.sql\`** : Schéma relationnel prêt pour PostgreSQL, Supabase, Neon, ou Cloud SQL avec gestion des utilisateurs, des articles, des commandes et des paiements Mobile Money (Wave, Orange Money, MTN).
+- **\`database/seed.sql\`** : Données initiales pour tester immédiatement votre application.
+- **\`database/sqlite_schema.sql\`** : Version SQLite ultra-légère pour les tests locaux ou le stockage embarqué.
+
+Pour exécuter le schéma sur votre base PostgreSQL / Supabase :
+\`\`\`bash
+psql -h <VOTRE_HOTE> -U <UTILISATEUR> -d <NOM_BASE> -f database/schema.sql
 \`\`\`
 
 ---
@@ -443,6 +461,202 @@ dist
       2
     ),
     description: "Configuration mobile hybride Capacitor",
+  });
+
+  // 12. Complete SQL Schemas & Database Migrations (PostgreSQL, MySQL, SQLite)
+  const sqlPostgresSchema = `-- ==============================================================================
+-- BASE DE DONNÉES : ${project.title.toUpperCase()}
+-- Généré automatiquement par Omnibuild AI Studio
+-- Compatible : PostgreSQL 13+, Neon, Supabase, Cloud SQL, Supabase, AWS RDS
+-- ==============================================================================
+
+-- Extension UUID
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Table des Utilisateurs
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    full_name VARCHAR(150) NOT NULL,
+    phone_number VARCHAR(50),
+    role VARCHAR(50) DEFAULT 'customer' CHECK (role IN ('admin', 'manager', 'customer', 'driver', 'agent')),
+    avatar_url TEXT,
+    preferred_currency VARCHAR(10) DEFAULT 'XOF',
+    is_verified BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table des Catégories
+CREATE TABLE IF NOT EXISTS categories (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL,
+    slug VARCHAR(120) UNIQUE NOT NULL,
+    description TEXT,
+    icon_name VARCHAR(50) DEFAULT 'folder',
+    display_order INT DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table des Produits / Articles / Services
+CREATE TABLE IF NOT EXISTS items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    category_id UUID REFERENCES categories(id) ON DELETE SET NULL,
+    title VARCHAR(200) NOT NULL,
+    slug VARCHAR(220) UNIQUE NOT NULL,
+    description TEXT,
+    price_cfa NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    original_price_cfa NUMERIC(12, 2),
+    stock_quantity INT DEFAULT 100,
+    is_available BOOLEAN DEFAULT TRUE,
+    rating NUMERIC(3, 2) DEFAULT 4.80,
+    image_url TEXT,
+    tags TEXT[],
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table des Commandes
+CREATE TABLE IF NOT EXISTS orders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_number VARCHAR(50) UNIQUE NOT NULL,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    total_amount_cfa NUMERIC(12, 2) NOT NULL,
+    delivery_fee_cfa NUMERIC(10, 2) DEFAULT 0,
+    status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'preparing', 'delivering', 'delivered', 'cancelled')),
+    delivery_address TEXT NOT NULL,
+    customer_phone VARCHAR(50) NOT NULL,
+    customer_name VARCHAR(150) NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table des Lignes de Commande
+CREATE TABLE IF NOT EXISTS order_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
+    item_id UUID REFERENCES items(id) ON DELETE RESTRICT,
+    quantity INT NOT NULL CHECK (quantity > 0),
+    unit_price_cfa NUMERIC(12, 2) NOT NULL,
+    subtotal_cfa NUMERIC(12, 2) NOT NULL
+);
+
+-- Table des Transactions et Paiements Mobile Money (Wave, Orange Money, MTN MoMo)
+CREATE TABLE IF NOT EXISTS payments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
+    provider VARCHAR(50) NOT NULL CHECK (provider IN ('wave', 'orange_money', 'mtn_momo', 'moov_money', 'card', 'cash')),
+    transaction_reference VARCHAR(120) UNIQUE NOT NULL,
+    operator_reference VARCHAR(120),
+    amount_cfa NUMERIC(12, 2) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'failed', 'refunded')),
+    phone_number VARCHAR(50) NOT NULL,
+    raw_webhook_payload JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    paid_at TIMESTAMP WITH TIME ZONE
+);
+
+-- Index pour optimiser les performances
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_items_category ON items(category_id);
+CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+
+-- ==============================================================================
+-- DONNÉES INITIALES (SEEDING)
+-- ==============================================================================
+
+INSERT INTO categories (id, name, slug, description, icon_name, display_order)
+VALUES 
+    ('11111111-1111-1111-1111-111111111111', 'Articles Vedettes', 'articles-vedettes', 'Sélection des meilleures offres de la semaine', 'sparkles', 1),
+    ('22222222-2222-2222-2222-222222222222', 'Nouveautés & Tendances', 'nouveautes-tendances', 'Nouveaux arrivages récents', 'fire', 2),
+    ('33333333-3333-3333-3333-333333333333', 'Promotions & Réductions', 'promotions-reductions', 'Tarifs réduits et déstockage', 'tags', 3)
+ON CONFLICT (slug) DO NOTHING;
+
+INSERT INTO items (id, category_id, title, slug, description, price_cfa, original_price_cfa, stock_quantity, is_available, rating, image_url)
+VALUES 
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '11111111-1111-1111-1111-111111111111', 'Pack Découverte Premium', 'pack-decouverte-premium', 'Pack complet exclusif avec livraison express en 2h', 15000.00, 18500.00, 50, TRUE, 4.90, 'https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?w=600'),
+    ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '11111111-1111-1111-1111-111111111111', 'Kit Essentiel Mobile Money', 'kit-essentiel-mobile-money', 'Prêt à l emploi, compatible Wave, Orange Money et MTN', 8500.00, 10000.00, 120, TRUE, 4.85, 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=600'),
+    ('cccccccc-cccc-cccc-cccc-cccccccccccc', '22222222-2222-2222-2222-222222222222', 'Abonnement Sérénité Pro', 'abonnement-serenite-pro', 'Accès illimité aux services et assistance prioritaire 7j/7', 25000.00, 30000.00, 999, TRUE, 5.00, 'https://images.unsplash.com/photo-1546868871-7041f2a55e12?w=600')
+ON CONFLICT (slug) DO NOTHING;
+`;
+
+  files.push({
+    path: "database/schema.sql",
+    content: sqlPostgresSchema,
+    description: "Schéma SQL complet et migrations avec tables relationnelles (Users, Items, Orders, Payments Wave/Orange/MTN)",
+  });
+
+  files.push({
+    path: "database/seed.sql",
+    content: sqlPostgresSchema,
+    description: "Script de peuplement initial des données (Seed Data SQL)",
+  });
+
+  // SQLite / MySQL alternative syntax script
+  const sqlSqliteSchema = `-- ==============================================================================
+-- SCHÉMA SQLITE (Compatibilité Légère & Mobile Local)
+-- Application : ${project.title}
+-- ==============================================================================
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    full_name TEXT NOT NULL,
+    phone_number TEXT,
+    role TEXT DEFAULT 'customer',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT UNIQUE NOT NULL,
+    description TEXT
+);
+
+CREATE TABLE IF NOT EXISTS items (
+    id TEXT PRIMARY KEY,
+    category_id TEXT,
+    title TEXT NOT NULL,
+    slug TEXT UNIQUE NOT NULL,
+    price_cfa REAL NOT NULL DEFAULT 0,
+    stock_quantity INTEGER DEFAULT 100,
+    rating REAL DEFAULT 4.8,
+    image_url TEXT,
+    FOREIGN KEY (category_id) REFERENCES categories(id)
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id TEXT PRIMARY KEY,
+    order_number TEXT UNIQUE NOT NULL,
+    user_id TEXT,
+    total_amount_cfa REAL NOT NULL,
+    status TEXT DEFAULT 'pending',
+    delivery_address TEXT,
+    customer_phone TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id TEXT PRIMARY KEY,
+    order_id TEXT,
+    provider TEXT NOT NULL,
+    transaction_reference TEXT UNIQUE NOT NULL,
+    amount_cfa REAL NOT NULL,
+    status TEXT DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_id) REFERENCES orders(id)
+);
+`;
+
+  files.push({
+    path: "database/sqlite_schema.sql",
+    content: sqlSqliteSchema,
+    description: "Schéma SQL optimisé pour base locale SQLite et mobile offline",
   });
 
   // Include any custom project files if available

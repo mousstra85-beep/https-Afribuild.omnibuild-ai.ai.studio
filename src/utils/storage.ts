@@ -417,17 +417,88 @@ export function sanitizeProject(raw: any, sourceContext: string = "general"): { 
     });
   }
 
-  if (!safeFiles.some((f) => f.name === "capacitor.config.json")) {
+  // Check database/schema.sql
+  if (!safeFiles.some((f) => f.name === "schema.sql" || f.path === "database/schema.sql")) {
     safeFiles.push({
-      name: "capacitor.config.json",
-      path: "capacitor.config.json",
-      language: "json",
-      content: JSON.stringify({
-        appId: `com.afribuilder.${safeTitle.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
-        appName: safeTitle,
-        webDir: "www",
-      }, null, 2),
-      description: "Configuration du pont natif mobile",
+      name: "schema.sql",
+      path: "database/schema.sql",
+      language: "sql",
+      content: `-- ==============================================================================
+-- BASE DE DONNÉES : ${safeTitle.toUpperCase()}
+-- Schéma relationnel PostgreSQL / Cloud SQL / Supabase
+-- ==============================================================================
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    full_name VARCHAR(150) NOT NULL,
+    phone_number VARCHAR(50),
+    role VARCHAR(50) DEFAULT 'customer',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title VARCHAR(200) NOT NULL,
+    description TEXT,
+    price_cfa NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    stock_quantity INT DEFAULT 100,
+    is_available BOOLEAN DEFAULT TRUE,
+    image_url TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_number VARCHAR(50) UNIQUE NOT NULL,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    total_amount_cfa NUMERIC(12, 2) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
+    delivery_address TEXT,
+    customer_phone VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
+    provider VARCHAR(50) NOT NULL, -- 'wave', 'orange_money', 'mtn_momo'
+    transaction_reference VARCHAR(120) UNIQUE NOT NULL,
+    amount_cfa NUMERIC(12, 2) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
+    phone_number VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+`,
+      description: "Schéma SQL complet et migrations de la base de données",
+    });
+  }
+
+  // Check README.md
+  if (!safeFiles.some((f) => f.name === "README.md")) {
+    safeFiles.push({
+      name: "README.md",
+      path: "README.md",
+      language: "markdown",
+      content: `# ${safeTitle}
+
+Application générée avec **Omnibuild AI Studio**.
+
+## 🚀 Fonctionnalités
+- Interface interactive responsive (Mobile & Desktop)
+- Intégration des paiements Mobile Money (Wave, Orange Money, MTN MoMo)
+- Base de données SQL prête à l'emploi (\`database/schema.sql\`)
+- Prêt pour déploiement sur Vercel, Netlify, GitHub Pages et Android APK
+
+## 🗄️ Base de Données
+Exécutez le script SQL sur votre instance PostgreSQL ou Supabase :
+\`\`\`bash
+psql -h <HOST> -U <USER> -d <DATABASE> -f database/schema.sql
+\`\`\`
+`,
+      description: "Documentation et guide de démarrage du projet",
     });
   }
 
@@ -1054,14 +1125,68 @@ export function setActiveProjectId(id: string) {
 
 
 /**
- * Generate a real, working web URL to share this application
+ * Encode a minimal project snapshot to a URL-safe Base64 string for instant cross-device sharing.
  */
-export function getProjectLiveUrl(project: Project): string {
+export function encodeProjectPayload(project: Project): string {
+  try {
+    const minimal = {
+      id: project.id,
+      title: project.title,
+      description: project.description,
+      category: project.category,
+      targetType: project.targetType,
+      interactiveAppHtml: project.interactiveAppHtml,
+    };
+    const jsonStr = JSON.stringify(minimal);
+    // UTF-8 safe base64 encoding
+    return btoa(
+      encodeURIComponent(jsonStr).replace(/%([0-9A-F]{2})/g, (_, p1) =>
+        String.fromCharCode(parseInt(p1, 16))
+      )
+    );
+  } catch (e) {
+    console.warn("Failed to encode project payload", e);
+    return "";
+  }
+}
+
+/**
+ * Decode project from a URL-safe Base64 string.
+ */
+export function decodeProjectPayload(b64: string): Project | null {
+  try {
+    if (!b64 || b64.trim() === "") return null;
+    const decodedStr = decodeURIComponent(
+      Array.prototype.map
+        .call(atob(b64.trim()), (c: string) => {
+          return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2);
+        })
+        .join("")
+    );
+    const parsed = JSON.parse(decodedStr);
+    if (parsed && (parsed.interactiveAppHtml || parsed.title)) {
+      return sanitizeProject(parsed, "url_import").project;
+    }
+  } catch (e) {
+    console.warn("Failed to decode project payload from URL", e);
+  }
+  return null;
+}
+
+/**
+ * Generate a real, working web URL to share this application in full standalone mode
+ */
+export function getProjectLiveUrl(project: Project, mode: "app" | "studio" = "app"): string {
   if (typeof window === "undefined") {
-    return `https://afribuilder.app?app=${project.id}`;
+    return `https://afribuilder.app?view=${mode}&app=${encodeURIComponent(project.id)}`;
   }
   const base = `${window.location.origin}${window.location.pathname}`;
-  return `${base}?app=${encodeURIComponent(project.id)}`;
+  const payload = encodeProjectPayload(project);
+  
+  if (payload && payload.length < 60000) {
+    return `${base}?view=${mode}&app=${encodeURIComponent(project.id)}#data=${payload}`;
+  }
+  return `${base}?view=${mode}&app=${encodeURIComponent(project.id)}`;
 }
 
 /**
@@ -1099,3 +1224,4 @@ export function openAppInNewTab(project: Project) {
     console.error("Failed to open app in new tab", e);
   }
 }
+

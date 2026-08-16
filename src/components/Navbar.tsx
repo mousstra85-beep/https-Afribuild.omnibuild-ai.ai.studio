@@ -30,6 +30,7 @@ interface NavbarProps {
   onOpenShare?: () => void;
   onOpenSettings?: () => void;
   onOpenOnboarding?: () => void;
+  onLaunchLiveApp?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -45,6 +46,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenShare,
   onOpenSettings,
   onOpenOnboarding,
+  onLaunchLiveApp,
 }) => {
   const { theme, isDark, toggleTheme } = useTheme();
 
@@ -196,6 +198,19 @@ export const Navbar: React.FC<NavbarProps> = ({
             <Plus className="w-4 h-4" />
             <span className="hidden sm:inline">Nouveau Projet</span>
           </button>
+
+          {/* Live Fullscreen App Launcher */}
+          {activeProject && onLaunchLiveApp && (
+            <button
+              id="btn-navbar-live-app"
+              onClick={onLaunchLiveApp}
+              className="flex items-center gap-1.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:opacity-95 text-white text-xs font-bold px-3 py-2 rounded-xl transition shadow-xs active:scale-95"
+              title="Tester l'application générée en direct (Mode Déployé Plein Écran)"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Tester l'App</span>
+            </button>
+          )}
 
           {/* Direct Share Button if active project */}
           {activeProject && onOpenShare && (

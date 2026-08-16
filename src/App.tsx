@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { AdminSettings, Project, UserAccount } from "./types";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import {
+  decodeProjectPayload,
   getActiveProjectId,
   getAdminSettings,
   getCurrentUser,
@@ -23,6 +24,7 @@ import { ApkCheckpointModal } from "./components/ApkCheckpointModal";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
 import { ProjectSettingsModal } from "./components/ProjectSettingsModal";
 import { OnboardingTour } from "./components/OnboardingTour";
+import { LiveAppViewer } from "./components/LiveAppViewer";
 import { Sparkles, Plus, Layers, ShieldCheck, Heart } from "lucide-react";
 
 function AppStudio() {
@@ -34,6 +36,23 @@ function AppStudio() {
     const saved = getActiveProjectId();
     const list = loadProjects();
     return saved && list.some((p) => p.id === saved) ? saved : list[0]?.id || null;
+  });
+
+  // View Mode: 'studio' (IDE/Dashboard) or 'live_app' (User-facing Fullscreen Application)
+  const [viewMode, setViewMode] = useState<"studio" | "live_app">(() => {
+    if (typeof window === "undefined") return "studio";
+    const params = new URLSearchParams(window.location.search);
+    const view = params.get("view");
+    if (view === "app" || view === "live" || view === "preview" || view === "standalone") {
+      return "live_app";
+    }
+    if (params.has("app") && !params.has("studio")) {
+      return "live_app";
+    }
+    if (window.location.hash && window.location.hash.includes("data=")) {
+      return "live_app";
+    }
+    return "studio";
   });
 
   // Modal open states
@@ -52,8 +71,60 @@ function AppStudio() {
     return localStorage.getItem("afribuilder_hide_onboarding_auto") !== "true";
   });
 
+  // Check URL payload for imported shared projects
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash;
+    const params = new URLSearchParams(window.location.search);
+
+    if (hash && hash.includes("data=")) {
+      const b64 = hash.split("data=")[1]?.split("&")[0];
+      if (b64) {
+        const decoded = decodeProjectPayload(b64);
+        if (decoded) {
+          const currentList = loadProjects();
+          const existingIdx = currentList.findIndex((p) => p.id === decoded.id);
+          let updatedList: Project[];
+          if (existingIdx >= 0) {
+            updatedList = currentList.map((p) => (p.id === decoded.id ? decoded : p));
+          } else {
+            updatedList = [decoded, ...currentList];
+          }
+          setProjectsList(updatedList);
+          saveProjects(updatedList);
+          setActiveIdState(decoded.id);
+          setActiveProjectId(decoded.id);
+        }
+      }
+    } else if (params.has("app")) {
+      const targetAppId = params.get("app");
+      if (targetAppId) {
+        const currentList = loadProjects();
+        if (currentList.some((p) => p.id === targetAppId)) {
+          setActiveIdState(targetAppId);
+          setActiveProjectId(targetAppId);
+        }
+      }
+    }
+  }, []);
+
   // Active project reference
   const activeProject = projects.find((p) => p.id === activeId) || projects[0] || null;
+
+  // If in Live App mode (Fullscreen standalone application with zero studio clutter)
+  if (viewMode === "live_app" && activeProject) {
+    return (
+      <LiveAppViewer
+        project={activeProject}
+        onOpenStudio={() => {
+          setViewMode("studio");
+          const url = new URL(window.location.href);
+          url.searchParams.set("view", "studio");
+          window.history.pushState({}, "", url.toString());
+        }}
+      />
+    );
+  }
 
   // Persist projects whenever changed
   const handleUpdateProject = (updated: Project) => {
@@ -137,7 +208,15 @@ function AppStudio() {
         onOpenShare={() => setIsShareOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenOnboarding={() => setIsOnboardingOpen(true)}
+        onLaunchLiveApp={() => {
+          setViewMode("live_app");
+          const url = new URL(window.location.href);
+          url.searchParams.set("view", "app");
+          if (activeProject) url.searchParams.set("app", activeProject.id);
+          window.history.pushState({}, "", url.toString());
+        }}
       />
+
 
       {/* Main Studio View */}
       <main className="flex-1">

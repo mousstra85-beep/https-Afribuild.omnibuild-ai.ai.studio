@@ -1,7 +1,13 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { AdminSettings, Project, ProjectFile, ProjectVersion, StepId, UserAccount } from "../types";
 import { exportProjectZip, generateInitialInteractiveApp } from "../utils/projectGenerators";
-import { saveProjects, sanitizeProject, retryLoadProjects, retryAndRecoverProjectState } from "../utils/storage";
+import {
+  saveProjects,
+  sanitizeProject,
+  retryLoadProjects,
+  retryAndRecoverProjectState,
+  getProjectLiveUrl,
+} from "../utils/storage";
 import {
   openArchitecturePdfPrintWindow,
   downloadArchitecturePdfFile,
@@ -721,19 +727,31 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             </div>
 
             {/* Quick Actions Bar */}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                id="btn-open-live-app-top"
+                onClick={() => {
+                  const liveUrl = getProjectLiveUrl(project, "app");
+                  window.open(liveUrl, "_blank");
+                }}
+                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-blue-600 hover:opacity-95 text-white font-bold text-xs transition shadow-md flex items-center gap-2 active:scale-95"
+                title="Tester l'application générée en plein écran avec toutes ses interfaces et vues fonctionnelles"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                <span>Tester l'App Déployée</span>
+              </button>
               <button
                 id="btn-open-preview-main"
                 onClick={onOpenPreview}
-                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 transition flex items-center gap-2 active:scale-95"
+                className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 transition flex items-center gap-2 active:scale-95"
               >
                 <Eye className="w-4 h-4 text-emerald-400" />
-                <span>Aperçu en Direct</span>
+                <span>Aperçu Cadré</span>
               </button>
               <button
                 id="btn-open-smart-export-top"
                 onClick={() => setActiveTab("github")}
-                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:opacity-95 text-white font-bold text-xs transition shadow-md flex items-center gap-2 active:scale-95"
+                className="px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:opacity-95 text-white font-bold text-xs transition shadow-md flex items-center gap-2 active:scale-95"
                 title="Exporter vers GitHub ou télécharger le package ZIP en 1 clic"
               >
                 <Github className="w-4 h-4" />
