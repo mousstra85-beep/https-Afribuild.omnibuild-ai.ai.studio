@@ -3,6 +3,7 @@ import { Project, StepId } from "../types";
 import { useTheme } from "../context/ThemeContext";
 import { getProjectLiveUrl, downloadStandaloneHtml, openAppInNewTab } from "../utils/storage";
 import { generateInitialInteractiveApp } from "../utils/projectGenerators";
+import { DiagnosticLogsMonitor } from "./DiagnosticLogsMonitor";
 import {
   Shield,
   CheckCircle2,
@@ -759,6 +760,14 @@ export const ProjectHealthDashboard: React.FC<ProjectHealthDashboardProps> = ({
             );
           })}
         </div>
+      </div>
+
+      {/* 4. Real-Time Storage & loadProjects Diagnostic Logs Monitor */}
+      <div className="pt-2">
+        <DiagnosticLogsMonitor
+          project={project}
+          onUpdateProject={onUpdateProject}
+        />
       </div>
     </div>
   );

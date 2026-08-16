@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { AdminSettings, Project, ProjectFile, ProjectVersion, StepId, UserAccount } from "../types";
 import { exportProjectZip, generateInitialInteractiveApp } from "../utils/projectGenerators";
-import { saveProjects, sanitizeProject } from "../utils/storage";
+import { saveProjects, sanitizeProject, retryLoadProjects, retryAndRecoverProjectState } from "../utils/storage";
 import {
   openArchitecturePdfPrintWindow,
   downloadArchitecturePdfFile,
@@ -11,6 +11,7 @@ import { ProjectSettingsModal } from "./ProjectSettingsModal";
 import { ProjectHealthDashboard } from "./ProjectHealthDashboard";
 import { ProjectVelocityDashboard } from "./ProjectVelocityDashboard";
 import { SmartExportWizard } from "./SmartExportWizard";
+import { DiagnosticLogsMonitor } from "./DiagnosticLogsMonitor";
 import {
   validateGitHubToken,
   exportProjectToGitHub,
@@ -75,6 +76,8 @@ import {
   X,
   FileCode,
   Printer,
+  Terminal,
+  RotateCw,
 } from "lucide-react";
 
 interface ProjectWorkspaceProps {
@@ -104,8 +107,9 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
 }) => {
   // Navigation sub-tabs
   const [activeTab, setActiveTab] = useState<
-    "overview" | "velocity" | "health" | "code" | "apk" | "web" | "share" | "hosting" | "docs" | "github" | "publish" | "versions" | "chat"
+    "overview" | "velocity" | "health" | "diagnostics" | "code" | "apk" | "web" | "share" | "hosting" | "docs" | "github" | "publish" | "versions" | "chat"
   >("overview");
+
 
   // Selected file in file viewer
   const [selectedFileName, setSelectedFileName] = useState<string>("index.html");
@@ -762,6 +766,19 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
                 <span className="hidden sm:inline">Diagnostic & Tests</span>
               </button>
               <button
+                id="btn-open-diagnostics-monitor"
+                onClick={() => setActiveTab("diagnostics")}
+                className={`px-3.5 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 active:scale-95 border ${
+                  activeTab === "diagnostics"
+                    ? "bg-indigo-600 text-white border-indigo-500 shadow-md"
+                    : "bg-slate-800 hover:bg-slate-700 text-indigo-300 border-slate-700"
+                }`}
+                title="Consulter le journal de logs de diagnostic et le mécanisme de retry de loadProjects"
+              >
+                <Terminal className="w-4 h-4 text-indigo-400" />
+                <span className="hidden sm:inline">📊 Logs & Retry</span>
+              </button>
+              <button
                 id="btn-open-share-workspace"
                 onClick={() => (onOpenShare ? onOpenShare() : setActiveTab("share"))}
                 className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-95 text-white font-bold text-xs transition shadow-md flex items-center gap-2 active:scale-95"
@@ -965,6 +982,7 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           { id: "overview", label: "Vue d'ensemble & Aperçu", icon: Eye },
           { id: "velocity", label: "📈 Vélocité & Ressources", icon: TrendingUp },
           { id: "health", label: "Diagnostic Santé & Tests IA", icon: Activity },
+          { id: "diagnostics", label: "📊 Logs Diagnostics & Retry", icon: Terminal },
           { id: "apk", label: "Génération APK & AAB", icon: Smartphone },
           { id: "web", label: "Déploiement Web", icon: Globe },
           { id: "share", label: "Partage & Réseaux", icon: Share2 },
@@ -1140,6 +1158,14 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
           onOpenPreview={onOpenPreview}
           onOpenShare={() => (onOpenShare ? onOpenShare() : setActiveTab("share"))}
           onNavigateTab={(tab) => setActiveTab(tab as any)}
+        />
+      )}
+
+      {/* TAB: DEDICATED DIAGNOSTIC LOGS MONITOR & RETRY */}
+      {activeTab === "diagnostics" && (
+        <DiagnosticLogsMonitor
+          project={project}
+          onUpdateProject={onUpdateProject}
         />
       )}
 
@@ -1795,6 +1821,29 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
             {/* Actions Bar */}
             <div className="flex flex-wrap items-center gap-2">
               <button
+                onClick={() => setActiveTab("diagnostics")}
+                className="px-3.5 py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 text-xs font-bold transition flex items-center gap-1.5 active:scale-95"
+                title="Ouvrir le moniteur de logs de diagnostic et tester le retry"
+              >
+                <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                <span>📊 Moniteur Diagnostics</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  const res = retryLoadProjects(3);
+                  const curr = res.projects.find((p) => p.id === project.id) || res.projects[0];
+                  if (curr) onUpdateProject(curr);
+                  triggerNotice(res.success ? "Auto-réparation et retry terminés avec succès !" : "Retry terminé.");
+                }}
+                className="px-3.5 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-xs font-bold transition flex items-center gap-1.5 active:scale-95"
+                title="Déclencher la procédure de retry et auto-réparation"
+              >
+                <RotateCw className="w-3.5 h-3.5 text-blue-400" />
+                <span>🔄 Réessayer (Retry)</span>
+              </button>
+
+              <button
                 onClick={() => setIsAddFileModalOpen(true)}
                 className="px-3.5 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-xs font-bold transition flex items-center gap-1.5 active:scale-95"
                 title="Ajouter un nouveau fichier personnalisé au projet"
@@ -1842,6 +1891,45 @@ export const ProjectWorkspace: React.FC<ProjectWorkspaceProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Corruption / Empty Files Warning Banner with 1-Click Self-Healing */}
+          {(integrityStatus.isCorrupted || filesList.length === 0 || !filesList.some((f) => f.name === "index.html")) && (
+            <div className="p-4 bg-rose-950/40 border border-rose-500/50 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-3 animate-in fade-in">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <h4 className="text-xs font-bold text-rose-200">
+                    Défaillance détectée dans l'arborescence de fichiers de l'explorateur
+                  </h4>
+                  <p className="text-[11px] text-rose-300/80">
+                    {integrityStatus.issues.join(" • ") || "L'explorateur ne contient aucun fichier indexé ou index.html est manquant."}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => {
+                    const res = retryAndRecoverProjectState(project.id);
+                    onUpdateProject(res.project);
+                    triggerNotice(res.message);
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition flex items-center gap-1.5"
+                >
+                  <Wrench className="w-3.5 h-3.5" />
+                  <span>Réparer Immédiatement</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab("diagnostics")}
+                  className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-700 transition flex items-center gap-1.5"
+                >
+                  <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Voir Logs</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             {/* Sidebar File Tree */}

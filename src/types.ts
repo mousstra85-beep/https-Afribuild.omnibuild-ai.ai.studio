@@ -171,3 +171,27 @@ export interface Project {
     timestamp: string;
   }[];
 }
+
+export interface DiagnosticLogEntry {
+  id: string;
+  timestamp: string;
+  level: "info" | "warn" | "error" | "success";
+  category: "storage_read" | "json_parse" | "sanitization" | "file_explorer" | "state_retry" | "integrity_check";
+  message: string;
+  details?: string;
+  contextData?: Record<string, any>;
+  recovered?: boolean;
+}
+
+export interface ProjectRetrievalReport {
+  timestamp: string;
+  totalProjects: number;
+  activeProjectId: string | null;
+  status: "optimal" | "degraded" | "recovered" | "critical";
+  retryCount: number;
+  filesIndexedCount: number;
+  hasIndexHtml: boolean;
+  hasInteractiveHtml: boolean;
+  integrityIssues: string[];
+  recentLogs: DiagnosticLogEntry[];
+}

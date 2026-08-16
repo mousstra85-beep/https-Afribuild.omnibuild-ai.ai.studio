@@ -1,8 +1,10 @@
 import {
   AdminSettings,
+  DiagnosticLogEntry,
   MobileMoneyOperator,
   Project,
   ProjectFile,
+  ProjectRetrievalReport,
   ProjectVersion,
   ResearchData,
   SecurityAuditData,
@@ -15,6 +17,83 @@ const STORAGE_KEY_USERS_DB = "afribuilder_users_db";
 const STORAGE_KEY_PROJECTS = "afribuilder_projects";
 const STORAGE_KEY_ACTIVE_PROJECT_ID = "afribuilder_active_project_id";
 const STORAGE_KEY_ADMIN_SETTINGS = "afribuilder_admin_settings";
+const STORAGE_KEY_DIAGNOSTIC_LOGS = "afribuilder_diagnostic_logs";
+
+// In-memory diagnostic logs cache for fast reactivity
+let inMemoryDiagnosticLogs: DiagnosticLogEntry[] = [];
+
+/**
+ * Retrieve all diagnostic logs recorded during project retrieval, hydration, and explorer checks.
+ */
+export function getDiagnosticLogs(): DiagnosticLogEntry[] {
+  try {
+    if (inMemoryDiagnosticLogs.length > 0) {
+      return [...inMemoryDiagnosticLogs];
+    }
+    const raw = localStorage.getItem(STORAGE_KEY_DIAGNOSTIC_LOGS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        inMemoryDiagnosticLogs = parsed;
+        return [...parsed];
+      }
+    }
+  } catch (err) {
+    console.error("Failed to read diagnostic logs from storage:", err);
+  }
+  return [...inMemoryDiagnosticLogs];
+}
+
+/**
+ * Add a diagnostic log entry and sync with storage.
+ */
+export function addDiagnosticLog(entry: {
+  level: "info" | "warn" | "error" | "success";
+  category: "storage_read" | "json_parse" | "sanitization" | "file_explorer" | "state_retry" | "integrity_check";
+  message: string;
+  details?: string;
+  contextData?: Record<string, any>;
+  recovered?: boolean;
+}): DiagnosticLogEntry {
+  const newEntry: DiagnosticLogEntry = {
+    id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+
+  inMemoryDiagnosticLogs.unshift(newEntry);
+  if (inMemoryDiagnosticLogs.length > 150) {
+    inMemoryDiagnosticLogs = inMemoryDiagnosticLogs.slice(0, 150);
+  }
+
+  try {
+    localStorage.setItem(STORAGE_KEY_DIAGNOSTIC_LOGS, JSON.stringify(inMemoryDiagnosticLogs));
+  } catch {
+    // Silently ignore quota errors for logs
+  }
+
+  // Also dispatch custom event so UI components can re-render reactively
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("afribuilder_diagnostic_log_added", { detail: newEntry }));
+  }
+
+  return newEntry;
+}
+
+/**
+ * Clear all diagnostic logs.
+ */
+export function clearDiagnosticLogs(): void {
+  inMemoryDiagnosticLogs = [];
+  try {
+    localStorage.removeItem(STORAGE_KEY_DIAGNOSTIC_LOGS);
+  } catch {
+    // Ignore
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("afribuilder_diagnostic_logs_cleared"));
+  }
+}
 
 export const DEFAULT_MERCHANT_CODES: MobileMoneyOperator[] = [
   {
@@ -182,11 +261,18 @@ export function saveAdminSettings(settings: AdminSettings) {
   }
 }
 
-export function sanitizeProject(raw: any): { project: Project; isRepaired: boolean; repairIssues: string[] } {
+export function sanitizeProject(raw: any, sourceContext: string = "general"): { project: Project; isRepaired: boolean; repairIssues: string[] } {
   const issues: string[] = [];
   let isRepaired = false;
 
   if (!raw || typeof raw !== "object") {
+    addDiagnosticLog({
+      level: "error",
+      category: "sanitization",
+      message: `Projet null ou non-objet détecté lors du chargement (${sourceContext})`,
+      details: `Valeur brute reçue : ${typeof raw === "object" ? "null" : typeof raw}`,
+      recovered: true,
+    });
     const fresh = createDefaultProject("Mon Application", "Description de l'application", "custom", "both");
     return {
       project: fresh,
@@ -196,18 +282,25 @@ export function sanitizeProject(raw: any): { project: Project; isRepaired: boole
   }
 
   const safeTitle = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : "Mon Application";
-  if (!raw.title) {
-    issues.push("Titre du projet absent (corrigé).");
+  if (!raw.title || typeof raw.title !== "string" || !raw.title.trim()) {
+    issues.push("Titre du projet absent ou invalide (corrigé).");
     isRepaired = true;
+    addDiagnosticLog({
+      level: "warn",
+      category: "sanitization",
+      message: `Titre manquant pour le projet ID "${raw.id || "inconnu"}"`,
+      details: `Remplacé par le titre par défaut "${safeTitle}"`,
+      recovered: true,
+    });
   }
 
-  const safeCategory: Project["category"] = ["ecommerce", "service", "delivery", "custom"].includes(raw.category)
+  const safeCategory: Project["category"] = ["ecommerce", "service", "delivery", "fintech", "showcase", "health", "education", "custom"].includes(raw.category)
     ? raw.category
     : "custom";
 
-  const safeTargetType: Project["targetType"] = ["mobile", "web", "both"].includes(raw.targetType)
+  const safeTargetType: Project["targetType"] = ["mobile_app", "website", "both"].includes(raw.targetType)
     ? raw.targetType
-    : "both";
+    : (raw.targetType === "mobile" ? "mobile_app" : raw.targetType === "web" ? "website" : "both");
 
   const safeDescription = typeof raw.description === "string" ? raw.description : "Application créée sur AfriBuilder Studio";
 
@@ -220,29 +313,53 @@ export function sanitizeProject(raw: any): { project: Project; isRepaired: boole
     safeHtml = generateInitialInteractiveApp(safeTitle, safeCategory, safeDescription);
     issues.push("Code HTML de l'application interactif manquant ou obsolète (reconstruit).");
     isRepaired = true;
+    addDiagnosticLog({
+      level: "error",
+      category: "file_explorer",
+      message: `Code HTML interactif vide ou incomplet pour "${safeTitle}"`,
+      details: `Taille détectée : ${typeof raw.interactiveAppHtml === "string" ? raw.interactiveAppHtml.length : 0} octets. Reconstitution depuis le gabarit.`,
+      recovered: true,
+    });
   }
 
   // Ensure files array integrity
   let safeFiles: ProjectFile[] = [];
   if (Array.isArray(raw.files) && raw.files.length > 0) {
     safeFiles = raw.files
-      .filter((f: any) => f && typeof f === "object" && typeof f.name === "string")
+      .filter((f: any) => f && typeof f === "object" && typeof f.name === "string" && f.name.trim().length > 0)
       .map((f: any) => ({
-        name: f.name || "fichier.txt",
-        path: typeof f.path === "string" ? f.path : f.name,
-        language: typeof f.language === "string" ? f.language : "plaintext",
+        name: (f.name || "fichier.txt").trim(),
+        path: typeof f.path === "string" && f.path.trim() ? f.path.trim() : f.name,
+        language: typeof f.language === "string" && f.language.trim() ? f.language.trim() : "plaintext",
         content: typeof f.content === "string" ? f.content : "",
         description: typeof f.description === "string" ? f.description : "Fichier de projet",
       }));
+  } else {
+    issues.push("Arborescence de fichiers absente ou format non-tableau (reconstruite).");
+    isRepaired = true;
+    addDiagnosticLog({
+      level: "error",
+      category: "file_explorer",
+      message: `Tableau des fichiers (files) inexistant ou corrompu pour "${safeTitle}"`,
+      details: `Type brut : ${typeof raw.files}, Array : ${Array.isArray(raw.files) ? "oui (vide)" : "non"}. Création des fichiers essentiels.`,
+      recovered: true,
+    });
   }
 
   // Check if index.html is in files
   const indexFileIndex = safeFiles.findIndex((f) => f.name === "index.html" || f.path === "www/index.html");
   if (indexFileIndex >= 0) {
-    if (!safeFiles[indexFileIndex].content || safeFiles[indexFileIndex].content.length < 50) {
+    if (!safeFiles[indexFileIndex].content || safeFiles[indexFileIndex].content.trim().length < 50) {
       safeFiles[indexFileIndex].content = safeHtml;
-      issues.push("Fichier index.html vide (restauré à partir du bac à sable).");
+      issues.push("Fichier index.html vide dans l'explorateur (restauré à partir du bac à sable).");
       isRepaired = true;
+      addDiagnosticLog({
+        level: "warn",
+        category: "file_explorer",
+        message: `Fichier index.html vide ou trop court (${safeFiles[indexFileIndex].content?.length || 0} car.)`,
+        details: "Contenu réinjecté depuis l'application interactive.",
+        recovered: true,
+      });
     }
   } else {
     safeFiles.unshift({
@@ -254,6 +371,13 @@ export function sanitizeProject(raw: any): { project: Project; isRepaired: boole
     });
     issues.push("Fichier index.html absent dans l'explorateur (généré).");
     isRepaired = true;
+    addDiagnosticLog({
+      level: "warn",
+      category: "file_explorer",
+      message: `Fichier principal index.html absent de l'explorateur pour "${safeTitle}"`,
+      details: "Création automatique du fichier www/index.html dans la liste des fichiers.",
+      recovered: true,
+    });
   }
 
   // Check AndroidManifest.xml
@@ -279,6 +403,20 @@ export function sanitizeProject(raw: any): { project: Project; isRepaired: boole
   }
 
   // Check capacitor.config.json
+  if (!safeFiles.some((f) => f.name === "capacitor.config.json")) {
+    safeFiles.push({
+      name: "capacitor.config.json",
+      path: "capacitor.config.json",
+      language: "json",
+      content: JSON.stringify({
+        appId: `com.afribuilder.${safeTitle.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
+        appName: safeTitle,
+        webDir: "www",
+      }, null, 2),
+      description: "Configuration du pont natif mobile",
+    });
+  }
+
   if (!safeFiles.some((f) => f.name === "capacitor.config.json")) {
     safeFiles.push({
       name: "capacitor.config.json",
@@ -528,63 +666,374 @@ ${safeDescription}
   };
 }
 
-export function loadProjects(): Project[] {
+/**
+ * Load projects with full telemetry diagnostics, anomaly detection, and auto-repair.
+ */
+export function loadProjectsWithDiagnostics(options?: {
+  retryAttempt?: number;
+}): {
+  projects: Project[];
+  report: ProjectRetrievalReport;
+  logs: DiagnosticLogEntry[];
+} {
+  const retryAttempt = options?.retryAttempt || 0;
+  const issues: string[] = [];
+  let status: ProjectRetrievalReport["status"] = "optimal";
+  let validatedProjects: Project[] = [];
+  const activeId = getActiveProjectId();
+
+  addDiagnosticLog({
+    level: "info",
+    category: "storage_read",
+    message: `[loadProjects] Démarrage du cycle de récupération (tentative ${retryAttempt + 1})`,
+    details: `Lecture de la clé localStorage "${STORAGE_KEY_PROJECTS}"`,
+    contextData: { retryAttempt, activeId },
+  });
+
   try {
     const raw = localStorage.getItem(STORAGE_KEY_PROJECTS);
     if (!raw) {
+      addDiagnosticLog({
+        level: "warn",
+        category: "storage_read",
+        message: "Clé afribuilder_projects absente du stockage",
+        details: "Génération automatique d'un projet de départ 'Boutique Ivoire Express'",
+        recovered: true,
+      });
       const defaultProj = createDefaultProject(
         "Boutique Ivoire Express",
         "Application de commerce électronique et livraison rapide avec paiement Wave et Orange Money à Abidjan",
         "ecommerce",
         "both"
       );
-      const initial = [defaultProj];
-      localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(initial));
-      localStorage.setItem(STORAGE_KEY_ACTIVE_PROJECT_ID, defaultProj.id);
-      return initial;
-    }
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      console.warn("Corrupted JSON in afribuilder_projects, recovering default project.");
-      const recovered = [createDefaultProject("Boutique Ivoire Express", "Application de commerce électronique", "ecommerce", "both")];
-      localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(recovered));
-      return recovered;
-    }
-
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      const defaultProj = createDefaultProject(
-        "Boutique Ivoire Express",
-        "Application de commerce électronique et livraison rapide avec paiement Wave et Orange Money à Abidjan",
-        "ecommerce",
-        "both"
-      );
-      localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify([defaultProj]));
-      return [defaultProj];
-    }
-
-    let needsPersist = false;
-    const validatedProjects: Project[] = [];
-
-    for (const rawProj of parsed) {
-      const { project, isRepaired } = sanitizeProject(rawProj);
-      if (isRepaired) {
-        needsPersist = true;
-      }
-      validatedProjects.push(project);
-    }
-
-    if (needsPersist) {
+      validatedProjects = [defaultProj];
       localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(validatedProjects));
+      localStorage.setItem(STORAGE_KEY_ACTIVE_PROJECT_ID, defaultProj.id);
+      status = "recovered";
+    } else {
+      let parsed: any;
+      try {
+        parsed = JSON.parse(raw);
+        addDiagnosticLog({
+          level: "success",
+          category: "json_parse",
+          message: "Désérialisation JSON du stockage réussie",
+          details: `Taille des données brutes : ${raw.length} caractères, structure : ${Array.isArray(parsed) ? `Tableau (${parsed.length} éléments)` : typeof parsed}`,
+        });
+      } catch (jsonErr: any) {
+        addDiagnosticLog({
+          level: "error",
+          category: "json_parse",
+          message: "Erreur critique de syntaxe JSON lors du parsing",
+          details: jsonErr.message || "Caractères invalides ou JSON tronqué",
+          recovered: true,
+        });
+        issues.push("Syntaxe JSON du stockage corrompue.");
+        status = "degraded";
+
+        const recovered = [
+          createDefaultProject("Boutique Ivoire Express", "Application de commerce électronique", "ecommerce", "both"),
+        ];
+        localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(recovered));
+        parsed = recovered;
+      }
+
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        addDiagnosticLog({
+          level: "warn",
+          category: "sanitization",
+          message: "Structure de données inattendue (tableau vide ou objet unique)",
+          details: `Type : ${typeof parsed}, Array : ${Array.isArray(parsed)}`,
+          recovered: true,
+        });
+        issues.push("Format des projets invalide ou vide.");
+        status = "degraded";
+
+        const defaultProj = createDefaultProject(
+          "Boutique Ivoire Express",
+          "Application de commerce électronique et livraison rapide avec paiement Wave et Orange Money à Abidjan",
+          "ecommerce",
+          "both"
+        );
+        parsed = [defaultProj];
+        localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(parsed));
+      }
+
+      let needsPersist = false;
+      for (const rawProj of parsed) {
+        const { project, isRepaired, repairIssues } = sanitizeProject(rawProj, "loadProjects");
+        if (isRepaired) {
+          needsPersist = true;
+          status = status === "optimal" ? "recovered" : status;
+          issues.push(...repairIssues);
+        }
+        validatedProjects.push(project);
+      }
+
+      if (needsPersist) {
+        localStorage.setItem(STORAGE_KEY_PROJECTS, JSON.stringify(validatedProjects));
+        addDiagnosticLog({
+          level: "info",
+          category: "state_retry",
+          message: "Synchronisation et persistance des corrections appliquées",
+          details: `${issues.length} anomalies résolues et sauvegardées.`,
+        });
+      }
     }
 
-    return validatedProjects;
-  } catch (err) {
-    console.error("Critical error in loadProjects recovery:", err);
-    return [createDefaultProject("Mon Application", "Description", "custom", "both")];
+    // Integrity check on the active project
+    const activeProject = validatedProjects.find((p) => p.id === activeId) || validatedProjects[0];
+    const filesCount = activeProject?.files?.length || 0;
+    const hasIndex = activeProject?.files?.some((f) => f.name === "index.html" && f.content && f.content.length > 50) ?? false;
+    const hasInteractive = Boolean(activeProject?.interactiveAppHtml && activeProject.interactiveAppHtml.length > 50);
+
+    if (filesCount === 0 || !hasIndex || !hasInteractive) {
+      status = "critical";
+      issues.push("L'explorateur ou le bac à sable interactif contient des données manquantes.");
+      addDiagnosticLog({
+        level: "error",
+        category: "file_explorer",
+        message: "État incomplet détecté pour l'explorateur de fichiers",
+        details: `Fichiers: ${filesCount}, index.html: ${hasIndex ? "OK" : "MANQUANT"}, Bac à sable: ${hasInteractive ? "OK" : "MANQUANT"}`,
+        recovered: false,
+      });
+    } else {
+      addDiagnosticLog({
+        level: "success",
+        category: "integrity_check",
+        message: `Validation de l'explorateur terminée (${filesCount} fichiers indexés)`,
+        details: `Projet "${activeProject?.title}" prêt et opérationnel.`,
+      });
+    }
+
+    const report: ProjectRetrievalReport = {
+      timestamp: new Date().toISOString(),
+      totalProjects: validatedProjects.length,
+      activeProjectId: activeProject?.id || null,
+      status,
+      retryCount: retryAttempt,
+      filesIndexedCount: filesCount,
+      hasIndexHtml: hasIndex,
+      hasInteractiveHtml: hasInteractive,
+      integrityIssues: issues,
+      recentLogs: getDiagnosticLogs().slice(0, 10),
+    };
+
+    return {
+      projects: validatedProjects,
+      report,
+      logs: getDiagnosticLogs(),
+    };
+  } catch (err: any) {
+    addDiagnosticLog({
+      level: "error",
+      category: "storage_read",
+      message: `Exception critique non gérée lors du chargement : ${err.message}`,
+      details: err.stack,
+      recovered: true,
+    });
+
+    const fallback = [createDefaultProject("Mon Application", "Description", "custom", "both")];
+    const report: ProjectRetrievalReport = {
+      timestamp: new Date().toISOString(),
+      totalProjects: 1,
+      activeProjectId: fallback[0].id,
+      status: "critical",
+      retryCount: retryAttempt,
+      filesIndexedCount: fallback[0].files.length,
+      hasIndexHtml: true,
+      hasInteractiveHtml: true,
+      integrityIssues: [err.message || "Erreur de chargement critique"],
+      recentLogs: getDiagnosticLogs().slice(0, 10),
+    };
+
+    return {
+      projects: fallback,
+      report,
+      logs: getDiagnosticLogs(),
+    };
   }
+}
+
+/**
+ * Standard project loader that delegates to loadProjectsWithDiagnostics
+ */
+export function loadProjects(): Project[] {
+  const result = loadProjectsWithDiagnostics();
+  return result.projects;
+}
+
+/**
+ * Retry mechanism for loading projects with progressive self-healing passes.
+ */
+export function retryLoadProjects(maxAttempts: number = 3): {
+  projects: Project[];
+  report: ProjectRetrievalReport;
+  attemptsUsed: number;
+  success: boolean;
+} {
+  addDiagnosticLog({
+    level: "info",
+    category: "state_retry",
+    message: `[retryLoadProjects] Déclenchement de la procédure de re-tentative automatique (Max ${maxAttempts} passes)...`,
+  });
+
+  let lastResult = loadProjectsWithDiagnostics({ retryAttempt: 1 });
+  let attempts = 1;
+
+  while (attempts < maxAttempts && (lastResult.report.status === "critical" || !lastResult.report.hasIndexHtml || lastResult.report.filesIndexedCount === 0)) {
+    attempts++;
+    addDiagnosticLog({
+      level: "warn",
+      category: "state_retry",
+      message: `Passe de réparation ${attempts}/${maxAttempts} en cours...`,
+      details: `Anomalies restantes : ${lastResult.report.integrityIssues.join(", ") || "État incomplet"}`,
+    });
+
+    // Reconstruct corrupted entities
+    const repaired = lastResult.projects.map((p) => {
+      const { project } = sanitizeProject(p, `retry_pass_${attempts}`);
+      return project;
+    });
+
+    saveProjects(repaired);
+    lastResult = loadProjectsWithDiagnostics({ retryAttempt: attempts });
+  }
+
+  const isHealthy = lastResult.report.hasIndexHtml && lastResult.report.filesIndexedCount > 0;
+
+  addDiagnosticLog({
+    level: isHealthy ? "success" : "error",
+    category: "state_retry",
+    message: isHealthy
+      ? `Récupération et auto-réparation réussies après ${attempts} passe(s)`
+      : `Échec partiel de la récupération après ${attempts} tentatives`,
+    details: `Statut final : ${lastResult.report.status}, Fichiers : ${lastResult.report.filesIndexedCount}`,
+  });
+
+  return {
+    projects: lastResult.projects,
+    report: lastResult.report,
+    attemptsUsed: attempts,
+    success: isHealthy,
+  };
+}
+
+/**
+ * Deep targeted recovery of a specific project state when the file explorer or sandbox encounters missing or corrupted data.
+ */
+export function retryAndRecoverProjectState(projectId?: string): {
+  success: boolean;
+  project: Project;
+  recoveredCount: number;
+  message: string;
+  logs: DiagnosticLogEntry[];
+} {
+  addDiagnosticLog({
+    level: "info",
+    category: "state_retry",
+    message: `[retryAndRecoverProjectState] Réparation ciblée demandée pour le projet : ${projectId || "Projet Actif"}`,
+  });
+
+  const projects = loadProjects();
+  const targetIdx = projectId ? projects.findIndex((p) => p.id === projectId) : 0;
+  const target = targetIdx >= 0 ? projects[targetIdx] : projects[0];
+
+  if (!target) {
+    const fresh = createDefaultProject("Nouvelle Application", "Description", "custom", "both");
+    saveProjects([fresh]);
+    return {
+      success: true,
+      project: fresh,
+      recoveredCount: 1,
+      message: "Nouveau projet sain initialisé avec succès.",
+      logs: getDiagnosticLogs(),
+    };
+  }
+
+  const { project: repaired, repairIssues } = sanitizeProject(target, "manual_deep_repair");
+
+  // Force-ensure files list has complete essentials
+  if (!repaired.files || repaired.files.length === 0 || !repaired.files.some((f) => f.name === "index.html")) {
+    const initialFiles: ProjectFile[] = [
+      {
+        name: "index.html",
+        path: "www/index.html",
+        language: "html",
+        content: repaired.interactiveAppHtml || generateInitialInteractiveApp(repaired.title, repaired.category, repaired.description),
+        description: "Interface web et mobile principale",
+      },
+      {
+        name: "app.js",
+        path: "www/js/app.js",
+        language: "javascript",
+        content: `// Moteur logique de ${repaired.title}\nconsole.log("AfriBuilder App initialized");`,
+        description: "Script applicatif interactif",
+      },
+      {
+        name: "AndroidManifest.xml",
+        path: "android/app/src/main/AndroidManifest.xml",
+        language: "xml",
+        content: `<?xml version="1.0" encoding="utf-8"?>\n<manifest xmlns:android="http://schemas.android.com/apk/res/android"\n    package="com.afribuilder.${repaired.title.toLowerCase().replace(/[^a-z0-9]/g, "")}">\n    <application android:label="${repaired.title}">\n        <activity android:name=".MainActivity" android:exported="true" />\n    </application>\n</manifest>`,
+        description: "Configuration Android",
+      }
+    ];
+    repaired.files = initialFiles;
+    repairIssues.push("Arborescence complète de fichiers reconstruite à neuf.");
+  }
+
+  projects[targetIdx >= 0 ? targetIdx : 0] = repaired;
+  saveProjects(projects);
+
+  addDiagnosticLog({
+    level: "success",
+    category: "state_retry",
+    message: `Réparation en profondeur effectuée (${repairIssues.length} corrections)`,
+    details: repairIssues.join(" • ") || "Aucune anomalie détectée.",
+  });
+
+  return {
+    success: true,
+    project: repaired,
+    recoveredCount: repairIssues.length,
+    message: `Projet "${repaired.title}" réparé avec succès (${repairIssues.length} corrections appliquées).`,
+    logs: getDiagnosticLogs(),
+  };
+}
+
+/**
+ * Diagnostic helper to simulate a broken/incomplete project state to test the monitor & auto-recovery mechanism.
+ */
+export function simulateProjectCorruptionForTesting(projectId?: string): { success: boolean; message: string } {
+  try {
+    const projects = loadProjects();
+    const targetIdx = projectId ? projects.findIndex((p) => p.id === projectId) : 0;
+    if (targetIdx >= 0) {
+      // Simulate missing files and broken index.html
+      const broken: any = {
+        ...projects[targetIdx],
+        files: [], // Empty explorer
+        interactiveAppHtml: "", // Empty sandbox
+      };
+      projects[targetIdx] = broken;
+      saveProjects(projects);
+
+      addDiagnosticLog({
+        level: "error",
+        category: "file_explorer",
+        message: "[SIMULATION TEST] Altération artificielle de l'explorateur et du bac à sable pour test de résilience",
+        details: "files = [], interactiveAppHtml = ''",
+      });
+
+      return {
+        success: true,
+        message: "Simulation d'erreur injectée : l'explorateur est maintenant vide. Observez la détection et déclenchez la réparation.",
+      };
+    }
+  } catch (err: any) {
+    return { success: false, message: err.message };
+  }
+  return { success: false, message: "Projet non trouvé" };
 }
 
 export function saveProjects(projects: Project[]) {
@@ -602,6 +1051,7 @@ export function getActiveProjectId(): string | null {
 export function setActiveProjectId(id: string) {
   localStorage.setItem(STORAGE_KEY_ACTIVE_PROJECT_ID, id);
 }
+
 
 /**
  * Generate a real, working web URL to share this application
